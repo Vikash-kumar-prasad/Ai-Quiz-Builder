@@ -94,7 +94,37 @@ app.post("/api/generate-quiz", async (req, res) => {
       return res.status(502).json({ error: "Model did not return valid questions." });
     }
 
-    res.json(parsed);
+    // Strict validation and sanitization of questions structure
+    const validQuestions = parsed.questions
+      .filter((q) => {
+        return (
+          q &&
+          typeof q.question === "string" &&
+          q.question.trim().length > 0 &&
+          Array.isArray(q.options) &&
+          q.options.length === 4 &&
+          q.options.every((opt) => typeof opt === "string" && opt.trim().length > 0) &&
+          typeof q.correctIndex === "number" &&
+          Number.isInteger(q.correctIndex) &&
+          q.correctIndex >= 0 &&
+          q.correctIndex <= 3
+        );
+      })
+      .map((q) => ({
+        question: q.question.trim(),
+        options: q.options.map((opt) => opt.trim()),
+        correctIndex: q.correctIndex,
+        explanation: (q.explanation || "Correct answer based on the source concept.").trim(),
+      }));
+
+    if (validQuestions.length === 0) {
+      return res.status(502).json({ error: "No valid assessment items could be extracted from AI response." });
+    }
+
+    res.json({
+      title: (parsed.title || "Assessment Quiz").trim(),
+      questions: validQuestions,
+    });
   } catch (err) {
     console.error("Unexpected error:", err);
     res.status(500).json({ error: "Unexpected server error." });

@@ -1,18 +1,12 @@
 import { useState } from "react";
-import mammoth from "mammoth";
 import "./styles.css";
 import { generateQuiz } from "./api.js";
-import { extractPdfText } from "./pdfText.js";
-import { extractPptxText } from "./pptxText.js";
 import SetupScreen from "./components/SetupScreen.jsx";
 import LoadingScreen from "./components/LoadingScreen.jsx";
 import ErrorScreen from "./components/ErrorScreen.jsx";
 import QuizScreen from "./components/QuizScreen.jsx";
 import ResultsScreen from "./components/ResultsScreen.jsx";
 
-// Top-level component: owns all app state and stage transitions, and
-// renders whichever screen matches the current stage. Each screen is a
-// "dumb" component — it just receives data and callbacks as props.
 export default function QuizBuilder() {
   const [stage, setStage] = useState("setup"); // setup | loading | quiz | results | error
   const [mode, setMode] = useState("topic");
@@ -21,6 +15,7 @@ export default function QuizBuilder() {
   const [fileName, setFileName] = useState("");
   const [count, setCount] = useState(5);
   const [difficulty, setDifficulty] = useState("medium");
+  const [timerSeconds, setTimerSeconds] = useState(0); // 0 = untimed
   const [quiz, setQuiz] = useState(null);
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState([]); // {selected, correct}
@@ -30,7 +25,7 @@ export default function QuizBuilder() {
 
   const canGenerate = mode === "topic" ? topic.trim().length > 2 : notes.trim().length > 20;
 
-  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB — pptx/pdf files with embedded images get large fast, even though the actual text is small
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
   async function handleFileSelected(file) {
     const lower = file.name.toLowerCase();
@@ -50,14 +45,19 @@ export default function QuizBuilder() {
 
     setFileName(file.name);
     setErrorMsg("");
+
     try {
+      // Dynamic imports: Keep the initial bundle lightweight
       if (isDocx) {
+        const mammoth = (await import("mammoth")).default;
         const buf = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer: buf });
         setNotes(result.value);
       } else if (isPdf) {
+        const { extractPdfText } = await import("./pdfText.js");
         setNotes(await extractPdfText(file));
       } else if (isPptx) {
+        const { extractPptxText } = await import("./pptxText.js");
         setNotes(await extractPptxText(file));
       } else {
         setNotes(await file.text());
@@ -72,6 +72,11 @@ export default function QuizBuilder() {
     }
   }
 
+  function handleClearFile() {
+    setFileName("");
+    setNotes("");
+  }
+
   async function handleGenerate() {
     setStage("loading");
     setErrorMsg("");
@@ -84,7 +89,7 @@ export default function QuizBuilder() {
       setRevealed(false);
       setStage("quiz");
     } catch (err) {
-      setErrorMsg("Something went wrong generating your quiz. Try again, or simplify your topic/notes.");
+      setErrorMsg(err.message || "Something went wrong generating your quiz. Try again or simplify your input.");
       setStage("error");
     }
   }
@@ -94,7 +99,8 @@ export default function QuizBuilder() {
     setSelected(i);
     setRevealed(true);
     const q = quiz.questions[current];
-    setAnswers((a) => [...a, { selected: i, correct: i === q.correctIndex }]);
+    const isCorrect = i === q.correctIndex;
+    setAnswers((a) => [...a, { selected: i, correct: isCorrect }]);
   }
 
   function next() {
@@ -117,16 +123,41 @@ export default function QuizBuilder() {
     setFileName("");
   }
 
+  function retryMissed() {
+    if (!quiz || !answers) return;
+    const missedQuestions = quiz.questions.filter((_, idx) => answers[idx] && !answers[idx].correct);
+    if (missedQuestions.length === 0) return;
+
+    setQuiz({
+      ...quiz,
+      title: `${quiz.title} (Practice Missed)`,
+      questions: missedQuestions,
+    });
+    setCurrent(0);
+    setAnswers([]);
+    setSelected(null);
+    setRevealed(false);
+    setStage("quiz");
+  }
+
   return (
     <div className="board-root">
       {stage === "setup" && (
         <SetupScreen
-          mode={mode} setMode={setMode}
-          topic={topic} setTopic={setTopic}
-          notes={notes} setNotes={setNotes}
+          mode={mode}
+          setMode={setMode}
+          topic={topic}
+          setTopic={setTopic}
+          notes={notes}
+          setNotes={setNotes}
           fileName={fileName}
-          count={count} setCount={setCount}
-          difficulty={difficulty} setDifficulty={setDifficulty}
+          onClearFile={handleClearFile}
+          count={count}
+          setCount={setCount}
+          difficulty={difficulty}
+          setDifficulty={setDifficulty}
+          timerSeconds={timerSeconds}
+          setTimerSeconds={setTimerSeconds}
           errorMsg={errorMsg}
           canGenerate={canGenerate}
           onGenerate={handleGenerate}
@@ -146,13 +177,19 @@ export default function QuizBuilder() {
           current={current}
           selected={selected}
           revealed={revealed}
+          timerSeconds={timerSeconds}
           onPickOption={pickOption}
           onNext={next}
         />
       )}
 
       {stage === "results" && quiz && (
-        <ResultsScreen quiz={quiz} answers={answers} onRestart={restart} />
+        <ResultsScreen
+          quiz={quiz}
+          answers={answers}
+          onRestart={restart}
+          onRetryMissed={retryMissed}
+        />
       )}
     </div>
   );
